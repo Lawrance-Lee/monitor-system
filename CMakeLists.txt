@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(worker 
     worker/src/main.cpp
     worker/src/utils/read_file.cpp
+    worker/src/monitor/load_monitor.cpp
 )
 
 target_include_directories(worker PRIVATE worker/include)
