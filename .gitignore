@@ -9,5 +9,9 @@ build/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
+/build/Makefile
 
+
+# eBPF build artifacts
+*.skel.h
+.output/
