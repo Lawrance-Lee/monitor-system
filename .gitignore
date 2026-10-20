@@ -15,3 +15,11 @@ cmake_install.cmake
 # eBPF build artifacts
 *.skel.h
 .output/
+
+# Linux kernel module build artifacts
+*.ko
+*.mod
+*.mod.c
+*.cmd
+Module.symvers
+modules.order
