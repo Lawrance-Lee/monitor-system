@@ -10,6 +10,7 @@ namespace monitor {
 QueryManager::QueryManager() = default;
 
 QueryManager::~QueryManager() { Close(); }
+
 bool QueryManager::Init(const std::string& host, const std::string& user,
                         const std::string& password,
                         const std::string& database) {
@@ -33,7 +34,8 @@ bool QueryManager::Init(const std::string& host, const std::string& user,
     conn_ = nullptr;
     return false;
   }
-    // 设置字符集
+
+  // 设置字符集
   mysql_set_character_set(conn_, "utf8mb4");
   initialized_ = true;
   std::cout << "QueryManager: MySQL connection initialized" << std::endl;
@@ -47,6 +49,7 @@ bool QueryManager::Init(const std::string& host, const std::string& user,
   return false;
 #endif
 }
+
 void QueryManager::Close() {
 #ifdef ENABLE_MYSQL
   std::lock_guard<std::mutex> lock(mtx_);
@@ -57,9 +60,11 @@ void QueryManager::Close() {
   initialized_ = false;
 #endif
 }
+
 bool QueryManager::ValidateTimeRange(const TimeRange& range) const {
   return range.start_time <= range.end_time;
 }
+
 std::string QueryManager::FormatTime(
     const std::chrono::system_clock::time_point& tp) const {
   std::time_t t = std::chrono::system_clock::to_time_t(tp);
@@ -69,6 +74,7 @@ std::string QueryManager::FormatTime(
   std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_time);
   return std::string(buf);
 }
+
 std::chrono::system_clock::time_point QueryManager::ParseTime(
     const char* str) const {
   std::tm tm = {};
@@ -76,6 +82,7 @@ std::chrono::system_clock::time_point QueryManager::ParseTime(
   ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
   return std::chrono::system_clock::from_time_t(std::mktime(&tm));
 }
+
 int QueryManager::GetTotalCount(const std::string& count_sql) {
 #ifdef ENABLE_MYSQL
   if (mysql_query(conn_, count_sql.c_str()) != 0) {
@@ -94,6 +101,7 @@ int QueryManager::GetTotalCount(const std::string& count_sql) {
   if (row && row[0]) {
     count = std::atoi(row[0]);
   }
+
   mysql_free_result(result);
   return count;
 #else
@@ -102,5 +110,237 @@ int QueryManager::GetTotalCount(const std::string& count_sql) {
 #endif
 }
 
+std::vector<PerformanceRecord> QueryManager::QueryPerformance(
+    const std::string& server_name, const TimeRange& time_range, int page,
+    int page_size, int* total_count) {
+  std::vector<PerformanceRecord> records;
 
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  // 验证参数
+  if (!ValidateTimeRange(time_range)) {
+    std::cerr << "QueryManager: Invalid time range" << std::endl;
+    return records;
+  }
+
+  if (page < 1) page = 1;
+  if (page_size < 1) page_size = 100;
+
+  std::string start_time = FormatTime(time_range.start_time);
+  std::string end_time = FormatTime(time_range.end_time);
+
+  // 获取总数
+  std::ostringstream count_sql;
+  count_sql << "SELECT COUNT(*) FROM server_performance WHERE server_name='"
+            << server_name << "' AND timestamp BETWEEN '" << start_time
+            << "' AND '" << end_time << "'";
+
+  if (total_count) {
+    *total_count = GetTotalCount(count_sql.str());
+  }
+
+  // 查询数据
+  int offset = (page - 1) * page_size;
+
+  std::ostringstream sql;
+  sql << "SELECT server_name, timestamp, cpu_percent, usr_percent, "
+         "system_percent, nice_percent, idle_percent, io_wait_percent, "
+         "irq_percent, soft_irq_percent, load_avg_1, load_avg_3, load_avg_15, "
+         "mem_used_percent, total, free, avail, disk_util_percent, "
+         "send_rate, rcv_rate, score, cpu_percent_rate, mem_used_percent_rate, "
+         "disk_util_percent_rate, load_avg_1_rate, send_rate_rate, rcv_rate_rate "
+         "FROM server_performance WHERE server_name='"
+      << server_name << "' AND timestamp BETWEEN '" << start_time << "' AND '"
+      << end_time << "' ORDER BY timestamp DESC LIMIT " << page_size
+      << " OFFSET " << offset;
+
+  if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: query failed: " << mysql_error(conn_)
+              << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    PerformanceRecord rec;
+    int i = 0;
+
+    rec.server_name = row[i++] ? row[i - 1] : "";
+    rec.timestamp =
+        row[i] ? ParseTime(row[i]) : std::chrono::system_clock::now();
+    i++;
+
+    rec.cpu_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.usr_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.system_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.nice_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.idle_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.io_wait_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.irq_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.soft_irq_percent = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.load_avg_1 = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.load_avg_3 = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.load_avg_15 = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.mem_used_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.mem_total = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.mem_free = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.mem_avail = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.disk_util_percent = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.send_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.rcv_rate = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.score = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.cpu_percent_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.mem_used_percent_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.disk_util_percent_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.load_avg_1_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.send_rate_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.rcv_rate_rate = row[i] ? std::atof(row[i]) : 0;
+
+    records.push_back(rec);
+  }
+
+  mysql_free_result(result);
+#else
+  (void)server_name;
+  (void)time_range;
+  (void)page;
+  (void)page_size;
+  (void)total_count;
+#endif
+
+  return records;
 }
+
+std::vector<PerformanceRecord> QueryManager::QueryTrend(
+    const std::string& server_name, const TimeRange& time_range,
+    int interval_seconds) {
+  std::vector<PerformanceRecord> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  if (!ValidateTimeRange(time_range)) {
+    std::cerr << "QueryManager: Invalid time range" << std::endl;
+    return records;
+  }
+
+  std::string start_time = FormatTime(time_range.start_time);
+  std::string end_time = FormatTime(time_range.end_time);
+
+  std::ostringstream sql;
+
+  if (interval_seconds > 0) {
+    // 带聚合的查询
+    sql << "SELECT server_name, "
+           "FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(timestamp) / "
+        << interval_seconds << ") * " << interval_seconds
+        << ") as time_bucket, "
+           "AVG(cpu_percent) as cpu_percent, "
+           "AVG(usr_percent) as usr_percent, "
+           "AVG(system_percent) as system_percent, "
+           "AVG(io_wait_percent) as io_wait_percent, "
+           "AVG(load_avg_1) as load_avg_1, "
+           "AVG(load_avg_3) as load_avg_3, "
+           "AVG(load_avg_15) as load_avg_15, "
+           "AVG(mem_used_percent) as mem_used_percent, "
+           "AVG(disk_util_percent) as disk_util_percent, "
+           "AVG(send_rate) as send_rate, "
+           "AVG(rcv_rate) as rcv_rate, "
+           "AVG(score) as score, "
+           "AVG(cpu_percent_rate) as cpu_percent_rate, "
+           "AVG(mem_used_percent_rate) as mem_used_percent_rate, "
+           "AVG(disk_util_percent_rate) as disk_util_percent_rate, "
+           "AVG(load_avg_1_rate) as load_avg_1_rate "
+           "FROM server_performance WHERE server_name='"
+        << server_name << "' AND timestamp BETWEEN '" << start_time
+        << "' AND '" << end_time
+        << "' GROUP BY server_name, time_bucket ORDER BY time_bucket";
+  } else {
+    // 不聚合，直接查询
+    sql << "SELECT server_name, timestamp, cpu_percent, usr_percent, "
+           "system_percent, io_wait_percent, load_avg_1, load_avg_3, "
+           "load_avg_15, mem_used_percent, disk_util_percent, send_rate, "
+           "rcv_rate, score, cpu_percent_rate, mem_used_percent_rate, "
+           "disk_util_percent_rate, load_avg_1_rate "
+           "FROM server_performance WHERE server_name='"
+        << server_name << "' AND timestamp BETWEEN '" << start_time
+        << "' AND '" << end_time << "' ORDER BY timestamp";
+  }
+
+  if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: trend query failed: " << mysql_error(conn_)
+              << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    PerformanceRecord rec;
+    int i = 0;
+
+    rec.server_name = row[i++] ? row[i - 1] : "";
+
+    rec.timestamp =
+        row[i] ? ParseTime(row[i]) : std::chrono::system_clock::now();
+    i++;
+
+    rec.cpu_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.usr_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.system_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.io_wait_percent = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.load_avg_1 = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.load_avg_3 = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.load_avg_15 = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.mem_used_percent = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.disk_util_percent = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.send_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.rcv_rate = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.score = row[i] ? std::atof(row[i]) : 0; i++;
+
+    rec.cpu_percent_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.mem_used_percent_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.disk_util_percent_rate = row[i] ? std::atof(row[i]) : 0; i++;
+    rec.load_avg_1_rate = row[i] ? std::atof(row[i]) : 0;
+
+    records.push_back(rec);
+  }
+
+  mysql_free_result(result);
+#else
+  (void)server_name;
+  (void)time_range;
+  (void)interval_seconds;
+#endif
+
+  return records;
+}
+}
+    
+  
