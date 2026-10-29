@@ -484,6 +484,190 @@ std::vector<AnomalyRecord> QueryManager::QueryAnomaly(
 
   return records;
 }
+std::vector<ServerScoreSummary> QueryManager::QueryScoreRank(
+    SortOrder order,
+    int page,
+    int page_size,
+    int* total_count) {
+  std::vector<ServerScoreSummary> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  if (page < 1) page = 1;
+  if (page_size < 1) page_size = 100;
+    // 获取总数（不同服务器数量）
+  std::string count_sql =
+      "SELECT COUNT(DISTINCT server_name) FROM server_performance";
+
+  if (total_count) {
+    *total_count = GetTotalCount(count_sql);
+  }
+    // 查询每台服务器的最新数据并排序
+  int offset = (page - 1) * page_size;
+  std::string order_str = (order == SortOrder::ASC) ? "ASC" : "DESC";
+    std::ostringstream sql;
+  sql << "SELECT p1.server_name, p1.score, p1.timestamp, p1.cpu_percent, "
+         "p1.mem_used_percent, p1.disk_util_percent, p1.load_avg_1 "
+         "FROM server_performance p1 "
+         "INNER JOIN ("
+         "  SELECT server_name, MAX(timestamp) as max_ts "
+         "  FROM server_performance GROUP BY server_name"
+         ") p2 ON p1.server_name = p2.server_name AND p1.timestamp = p2.max_ts "
+         "ORDER BY p1.score "
+      << order_str << " LIMIT " << page_size << " OFFSET " << offset;
+        if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: score rank query failed: "
+              << mysql_error(conn_) << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+    auto now = std::chrono::system_clock::now();
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    ServerScoreSummary rec;
+
+    rec.server_name = row[0] ? row[0] : "";
+    rec.score = row[1] ? std::atof(row[1]) : 0;
+    rec.last_update =
+        row[2] ? ParseTime(row[2]) : now;
+
+    rec.cpu_percent = row[3] ? std::atof(row[3]) : 0;
+    rec.mem_used_percent = row[4] ? std::atof(row[4]) : 0;
+    rec.disk_util_percent = row[5] ? std::atof(row[5]) : 0;
+    rec.load_avg_1 = row[6] ? std::atof(row[6]) : 0;
+        // 判断在线状态（60秒阈值）
+    auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                   now - rec.last_update)
+                   .count();
+
+    rec.status =
+        (age > 60) ? ServerStatus::OFFLINE : ServerStatus::ONLINE;
+
+    records.push_back(rec);
+  }
+
+  mysql_free_result(result);
+  #else
+  (void)order;
+  (void)page;
+  (void)page_size;
+  (void)total_count;
+#endif
+
+  return records;
+}
+std::vector<ServerScoreSummary> QueryManager::QueryLatestScore(
+    ClusterStats* stats) {
+  std::vector<ServerScoreSummary> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  // 查询每台服务器的最新数据
+  std::string sql =
+      "SELECT p1.server_name, p1.score, p1.timestamp, p1.cpu_percent, "
+      "p1.mem_used_percent, p1.disk_util_percent, p1.load_avg_1 "
+      "FROM server_performance p1 "
+      "INNER JOIN ("
+      "  SELECT server_name, MAX(timestamp) as max_ts "
+      "  FROM server_performance GROUP BY server_name"
+      ") p2 ON p1.server_name = p2.server_name AND p1.timestamp = p2.max_ts "
+      "ORDER BY p1.score DESC";
+        if (mysql_query(conn_, sql.c_str()) != 0) {
+    std::cerr << "QueryManager: latest score query failed: "
+              << mysql_error(conn_) << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+   auto now = std::chrono::system_clock::now();
+
+  float total_score = 0;
+  float max_score = -1;
+  float min_score = 101;
+
+  std::string best_server, worst_server;
+
+  int online_count = 0;
+  int offline_count = 0;
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    ServerScoreSummary rec;
+
+    rec.server_name = row[0] ? row[0] : "";
+    rec.score = row[1] ? std::atof(row[1]) : 0;
+    rec.last_update = row[2] ? ParseTime(row[2]) : now;
+    rec.cpu_percent = row[3] ? std::atof(row[3]) : 0;
+    rec.mem_used_percent = row[4] ? std::atof(row[4]) : 0;
+    rec.disk_util_percent = row[5] ? std::atof(row[5]) : 0;
+    rec.load_avg_1 = row[6] ? std::atof(row[6]) : 0;
+        // 判断在线状态（60秒阈值）
+    auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                   now - rec.last_update)
+                   .count();
+
+    rec.status =
+        (age > 60) ? ServerStatus::OFFLINE : ServerStatus::ONLINE;
+
+    if (rec.status == ServerStatus::ONLINE) {
+      online_count++;
+    } else {
+      offline_count++;
+    }
+        // 统计
+    total_score += rec.score;
+
+    if (rec.score > max_score) {
+      max_score = rec.score;
+      best_server = rec.server_name;
+    }
+
+    if (rec.score < min_score) {
+      min_score = rec.score;
+      worst_server = rec.server_name;
+    }
+
+    records.push_back(rec);
+  }
+
+  mysql_free_result(result);
+    // 填充集群统计
+  if (stats) {
+    stats->total_servers = static_cast<int>(records.size());
+    stats->online_servers = online_count;
+    stats->offline_servers = offline_count;
+
+    stats->avg_score =
+        records.empty() ? 0 : total_score / records.size();
+
+    stats->max_score = max_score > 0 ? max_score : 0;
+    stats->min_score = min_score < 101 ? min_score : 0;
+
+    stats->best_server = best_server;
+    stats->worst_server = worst_server;
+  }
+  #else
+  (void)stats;
+#endif
+
+  return records;
+}
 }
     
   
