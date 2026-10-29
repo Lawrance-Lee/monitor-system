@@ -341,6 +341,149 @@ std::vector<PerformanceRecord> QueryManager::QueryTrend(
 
   return records;
 }
+std::vector<AnomalyRecord> QueryManager::QueryAnomaly(
+    const std::string& server_name, const TimeRange& time_range,
+    const AnomalyThresholds& thresholds, int page, int page_size,
+    int* total_count) {
+  std::vector<AnomalyRecord> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  if (!ValidateTimeRange(time_range)) {
+    std::cerr << "QueryManager: Invalid time range" << std::endl;
+    return records;
+  }
+
+  if (page < 1) page = 1;
+  if (page_size < 1) page_size = 100;
+
+  std::string start_time = FormatTime(time_range.start_time);
+  std::string end_time = FormatTime(time_range.end_time);
+    // 构建WHERE条件
+  std::ostringstream where_clause;
+  where_clause << "timestamp BETWEEN '" << start_time << "' AND '" << end_time
+               << "'";
+
+  if (!server_name.empty()) {
+    where_clause << " AND server_name='" << server_name << "'";
+  }
+
+  where_clause << " AND (cpu_percent > " << thresholds.cpu_threshold
+               << " OR mem_used_percent > " << thresholds.mem_threshold
+               << " OR disk_util_percent > " << thresholds.disk_threshold
+               << " OR ABS(cpu_percent_rate) > "
+               << thresholds.change_rate_threshold
+               << " OR ABS(mem_used_percent_rate) > "
+               << thresholds.change_rate_threshold
+               << ")";
+                 // 获取总数
+  std::ostringstream count_sql;
+  count_sql << "SELECT COUNT(*) FROM server_performance WHERE "
+            << where_clause.str();
+
+  if (total_count) {
+    *total_count = GetTotalCount(count_sql.str());
+  }
+    // 查询数据
+  int offset = (page - 1) * page_size;
+
+  std::ostringstream sql;
+  sql << "SELECT server_name, timestamp, cpu_percent, mem_used_percent, "
+         "disk_util_percent, cpu_percent_rate, mem_used_percent_rate "
+         "FROM server_performance WHERE "
+      << where_clause.str() << " ORDER BY timestamp DESC LIMIT " << page_size
+      << " OFFSET " << offset;
+        if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: anomaly query failed: " << mysql_error(conn_)
+              << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+    MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    std::string srv_name = row[0] ? row[0] : "";
+
+    auto ts =
+        row[1] ? ParseTime(row[1]) : std::chrono::system_clock::now();
+
+    float cpu = row[2] ? std::atof(row[2]) : 0;
+    float mem = row[3] ? std::atof(row[3]) : 0;
+    float disk = row[4] ? std::atof(row[4]) : 0;
+    float cpu_rate = row[5] ? std::atof(row[5]) : 0;
+    float mem_rate = row[6] ? std::atof(row[6]) : 0;
+        // 生成异常记录
+    auto add_anomaly = [&](const std::string& type,
+                           const std::string& metric,
+                           float value,
+                           float threshold) {
+      AnomalyRecord rec;
+      rec.server_name = srv_name;
+      rec.timestamp = ts;
+      rec.anomaly_type = type;
+      rec.metric_name = metric;
+      rec.value = value;
+      rec.threshold = threshold;
+            // 判断严重程度
+      if (type == "CPU_HIGH" && value > 95) {
+        rec.severity = "CRITICAL";
+      } else if (type == "MEM_HIGH" && value > 95) {
+        rec.severity = "CRITICAL";
+      } else if (type == "DISK_HIGH" && value > 95) {
+        rec.severity = "CRITICAL";
+      } else if (type == "RATE_SPIKE" && std::abs(value) > 1.0) {
+        rec.severity = "CRITICAL";
+      } else {
+        rec.severity = "WARNING";
+      }
+
+      records.push_back(rec);
+    };
+        if (cpu > thresholds.cpu_threshold) {
+      add_anomaly("CPU_HIGH", "cpu_percent", cpu,
+                  thresholds.cpu_threshold);
+    }
+
+    if (mem > thresholds.mem_threshold) {
+      add_anomaly("MEM_HIGH", "mem_used_percent", mem,
+                  thresholds.mem_threshold);
+    }
+
+    if (disk > thresholds.disk_threshold) {
+      add_anomaly("DISK_HIGH", "disk_util_percent", disk,
+                  thresholds.disk_threshold);
+    }
+
+    if (std::abs(cpu_rate) > thresholds.change_rate_threshold) {
+      add_anomaly("RATE_SPIKE", "cpu_percent_rate", cpu_rate,
+                  thresholds.change_rate_threshold);
+    }
+
+    if (std::abs(mem_rate) > thresholds.change_rate_threshold) {
+      add_anomaly("RATE_SPIKE", "mem_used_percent_rate", mem_rate,
+                  thresholds.change_rate_threshold);
+    }
+      }
+
+  mysql_free_result(result);
+#else
+  (void)server_name;
+  (void)time_range;
+  (void)thresholds;
+  (void)page;
+  (void)page_size;
+  (void)total_count;
+#endif
+
+  return records;
+}
 }
     
   
