@@ -668,6 +668,402 @@ std::vector<ServerScoreSummary> QueryManager::QueryLatestScore(
 
   return records;
 }
+std::vector<NetDetailRecord> QueryManager::QueryNetDetail(
+    const std::string& server_name,
+    const TimeRange& time_range,
+    int page,
+    int page_size,
+    int* total_count) {
+  std::vector<NetDetailRecord> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  if (!ValidateTimeRange(time_range)) {
+    return records;
+  }
+
+  if (page < 1) page = 1;
+  if (page_size < 1) page_size = 100;
+
+  std::string start_time = FormatTime(time_range.start_time);
+  std::string end_time = FormatTime(time_range.end_time);
+    // 获取总数
+  std::ostringstream count_sql;
+  count_sql << "SELECT COUNT(*) FROM server_net_detail WHERE server_name='"
+            << server_name << "' AND timestamp BETWEEN '" << start_time
+            << "' AND '" << end_time << "'";
+
+  if (total_count) {
+    *total_count = GetTotalCount(count_sql.str());
+  }
+    // 查询数据
+  int offset = (page - 1) * page_size;
+
+  std::ostringstream sql;
+  sql << "SELECT server_name, net_name, timestamp, err_in, err_out, "
+         "drop_in, drop_out, rcv_bytes_rate, snd_bytes_rate, "
+         "rcv_packets_rate, snd_packets_rate "
+         "FROM server_net_detail WHERE server_name='"
+      << server_name << "' AND timestamp BETWEEN '" << start_time << "' AND '"
+      << end_time << "' ORDER BY timestamp DESC LIMIT " << page_size
+      << " OFFSET " << offset;
+     if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: net detail query failed: "
+              << mysql_error(conn_) << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+    MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    NetDetailRecord rec;
+    int i = 0;
+
+    rec.server_name = row[i++] ? row[i - 1] : "";
+    rec.net_name = row[i++] ? row[i - 1] : "";
+
+    rec.timestamp =
+        row[i] ? ParseTime(row[i]) : std::chrono::system_clock::now();
+    i++;
+
+    rec.err_in = row[i] ? std::stoull(row[i]) : 0;
+    i++;
+
+    rec.err_out = row[i] ? std::stoull(row[i]) : 0;
+    i++;
+
+    rec.drop_in = row[i] ? std::stoull(row[i]) : 0;
+    i++;
+
+    rec.drop_out = row[i] ? std::stoull(row[i]) : 0;
+    i++;
+
+    rec.rcv_bytes_rate = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.snd_bytes_rate = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.rcv_packets_rate = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.snd_packets_rate = row[i] ? std::atof(row[i]) : 0;
+
+    records.push_back(rec);
+  }
+    mysql_free_result(result);
+#else
+  (void)server_name;
+  (void)time_range;
+  (void)page;
+  (void)page_size;
+  (void)total_count;
+#endif
+
+  return records;
+}
+std::vector<DiskDetailRecord> QueryManager::QueryDiskDetail(
+    const std::string& server_name,
+    const TimeRange& time_range,
+    int page,
+    int page_size,
+    int* total_count) {
+  std::vector<DiskDetailRecord> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  if (!ValidateTimeRange(time_range)) {
+    return records;
+  }
+
+  if (page < 1) page = 1;
+  if (page_size < 1) page_size = 100;
+
+  std::string start_time = FormatTime(time_range.start_time);
+  std::string end_time = FormatTime(time_range.end_time);
+    // 获取总数
+  std::ostringstream count_sql;
+  count_sql << "SELECT COUNT(*) FROM server_disk_detail WHERE server_name='"
+            << server_name << "' AND timestamp BETWEEN '" << start_time
+            << "' AND '" << end_time << "'";
+
+  if (total_count) {
+    *total_count = GetTotalCount(count_sql.str());
+  } // 查询数据
+  int offset = (page - 1) * page_size;
+
+  std::ostringstream sql;
+  sql << "SELECT server_name, disk_name, timestamp, read_bytes_per_sec, "
+         "write_bytes_per_sec, read_iops, write_iops, avg_read_latency_ms, "
+         "avg_write_latency_ms, util_percent "
+         "FROM server_disk_detail WHERE server_name='"
+      << server_name << "' AND timestamp BETWEEN '" << start_time << "' AND '"
+      << end_time << "' ORDER BY timestamp DESC LIMIT " << page_size
+      << " OFFSET " << offset;
+        if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: disk detail query failed: "
+              << mysql_error(conn_) << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+    MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    DiskDetailRecord rec;
+    int i = 0;
+
+    rec.server_name = row[i++] ? row[i - 1] : "";
+    rec.disk_name = row[i++] ? row[i - 1] : "";
+
+    rec.timestamp =
+        row[i] ? ParseTime(row[i]) : std::chrono::system_clock::now();
+    i++;
+
+    rec.read_bytes_per_sec = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.write_bytes_per_sec = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.read_iops = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.write_iops = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.avg_read_latency_ms = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.avg_write_latency_ms = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.util_percent = row[i] ? std::atof(row[i]) : 0;
+
+    records.push_back(rec);
+  }
+    mysql_free_result(result);
+#else
+  (void)server_name;
+  (void)time_range;
+  (void)page;
+  (void)page_size;
+  (void)total_count;
+#endif
+
+  return records;
+}
+std::vector<MemDetailRecord> QueryManager::QueryMemDetail(
+    const std::string& server_name, const TimeRange& time_range, int page,
+    int page_size, int* total_count) {
+  std::vector<MemDetailRecord> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  if (!ValidateTimeRange(time_range)) {
+    return records;
+  }
+  if (page < 1) page = 1;
+  if (page_size < 1) page_size = 100;
+
+  std::string start_time = FormatTime(time_range.start_time);
+  std::string end_time = FormatTime(time_range.end_time);
+
+  // 获取总数
+  std::ostringstream count_sql;
+  count_sql << "SELECT COUNT(*) FROM server_mem_detail WHERE server_name='"
+            << server_name << "' AND timestamp BETWEEN '" << start_time
+            << "' AND '" << end_time << "'";
+
+  if (total_count) {
+    *total_count = GetTotalCount(count_sql.str());
+  }
+
+  // 查询数据
+  int offset = (page - 1) * page_size;
+
+  std::ostringstream sql;
+  sql << "SELECT server_name, timestamp, total, free, avail, buffers, "
+         "cached, active, inactive, dirty "
+         "FROM server_mem_detail WHERE server_name='"
+      << server_name << "' AND timestamp BETWEEN '" << start_time << "' AND '"
+      << end_time << "' ORDER BY timestamp DESC LIMIT " << page_size
+      << " OFFSET " << offset;
+
+  if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: mem detail query failed: "
+              << mysql_error(conn_) << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    MemDetailRecord rec;
+    int i = 0;
+
+    rec.server_name = row[i++] ? row[i - 1] : "";
+
+    rec.timestamp =
+        row[i] ? ParseTime(row[i]) : std::chrono::system_clock::now();
+    i++;
+
+    rec.total = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.free = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.avail = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.buffers = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.cached = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.active = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.inactive = row[i] ? std::atof(row[i]) : 0;
+    i++;
+
+    rec.dirty = row[i] ? std::atof(row[i]) : 0;
+
+    records.push_back(rec);
+  }
+
+  mysql_free_result(result);
+#else
+  (void)server_name;
+  (void)time_range;
+  (void)page;
+  (void)page_size;
+  (void)total_count;
+#endif
+
+  return records;
+}
+std::vector<SoftIrqDetailRecord> QueryManager::QuerySoftIrqDetail(
+    const std::string& server_name, const TimeRange& time_range, int page,
+    int page_size, int* total_count) {
+  std::vector<SoftIrqDetailRecord> records;
+
+#ifdef ENABLE_MYSQL
+  std::lock_guard<std::mutex> lock(mtx_);
+  if (!initialized_ || !conn_) {
+    return records;
+  }
+
+  if (!ValidateTimeRange(time_range)) {
+    return records;
+  }
+
+  if (page < 1) page = 1;
+  if (page_size < 1) page_size = 100;
+
+  std::string start_time = FormatTime(time_range.start_time);
+  std::string end_time = FormatTime(time_range.end_time);
+
+  // 获取总数
+  std::ostringstream count_sql;
+  count_sql << "SELECT COUNT(*) FROM server_softirq_detail WHERE server_name='"
+            << server_name << "' AND timestamp BETWEEN '" << start_time
+            << "' AND '" << end_time << "'";
+
+  if (total_count) {
+    *total_count = GetTotalCount(count_sql.str());
+  }
+
+  // 查询数据
+  int offset = (page - 1) * page_size;
+
+  std::ostringstream sql;
+  sql << "SELECT server_name, cpu_name, timestamp, hi, timer, net_tx, "
+         "net_rx, block, sched "
+         "FROM server_softirq_detail WHERE server_name='"
+      << server_name << "' AND timestamp BETWEEN '" << start_time << "' AND '"
+      << end_time << "' ORDER BY timestamp DESC LIMIT " << page_size
+      << " OFFSET " << offset;
+
+  if (mysql_query(conn_, sql.str().c_str()) != 0) {
+    std::cerr << "QueryManager: softirq detail query failed: "
+              << mysql_error(conn_) << std::endl;
+    return records;
+  }
+
+  MYSQL_RES* result = mysql_store_result(conn_);
+  if (!result) {
+    return records;
+  }
+
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result))) {
+    SoftIrqDetailRecord rec;
+    int i = 0;
+
+    rec.server_name = row[i++] ? row[i - 1] : "";
+    rec.cpu_name = row[i++] ? row[i - 1] : "";
+
+    rec.timestamp =
+        row[i] ? ParseTime(row[i]) : std::chrono::system_clock::now();
+    i++;
+
+    rec.hi = row[i] ? std::stoll(row[i]) : 0;
+    i++;
+
+    rec.timer = row[i] ? std::stoll(row[i]) : 0;
+    i++;
+
+    rec.net_tx = row[i] ? std::stoll(row[i]) : 0;
+    i++;
+
+    rec.net_rx = row[i] ? std::stoll(row[i]) : 0;
+    i++;
+
+    rec.block = row[i] ? std::stoll(row[i]) : 0;
+    i++;
+
+    rec.sched = row[i] ? std::stoll(row[i]) : 0;
+
+    records.push_back(rec);
+  }
+
+  mysql_free_result(result);
+#else
+  (void)server_name;
+  (void)time_range;
+  (void)page;
+  (void)page_size;
+  (void)total_count;
+#endif
+
+  return records;
+}
 }
     
   
