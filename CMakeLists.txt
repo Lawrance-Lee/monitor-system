@@ -13,7 +13,7 @@ add_subdirectory(proto)
 # Worker 后续开发到时再接入
 add_subdirectory(worker)
 
-# Manager 后续开发到时再接入
-# if(BUILD_MANAGER)
-#     add_subdirectory(manager)
-# endif()
+ #Manager 后续开发到时再接入
+ if(BUILD_MANAGER)
+     add_subdirectory(manager)
+ endif()
