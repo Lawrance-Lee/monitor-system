@@ -1,5 +1,5 @@
 #include "host_manager.h"
-
+#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
@@ -16,7 +16,7 @@ namespace monitor {
 namespace {
 const char* MYSQL_HOST = "127.0.0.1";
 const char* MYSQL_USER = "monitor";
-const char* MYSQL_PASS = "REMOVED_OLD_PASSWORD";
+const char* MYSQL_PASS = std::getenv("MONITOR_DB_PASSWORD");
 const char* MYSQL_DB = "monitor_db";
 
 // 用于详细表变化率计算的历史数据
@@ -391,6 +391,11 @@ void HostManager::WriteToMysql(
     float mem_avail_rate, float net_in_rate_rate, float net_out_rate_rate,
     float net_in_drop_rate_rate, float net_out_drop_rate_rate) {
 #ifdef ENABLE_MYSQL
+  if (MYSQL_PASS == nullptr || MYSQL_PASS[0] == '\0') {
+    std::cerr << "MONITOR_DB_PASSWORD is not set\n";
+    return;
+  }
+
   MYSQL* conn = mysql_init(NULL);
   if (!conn) {
     std::cerr << "mysql_init failed\n";

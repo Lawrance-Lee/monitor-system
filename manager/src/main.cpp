@@ -1,8 +1,10 @@
+
 #include <grpc/grpc.h>
 #include <grpcpp/server_builder.h>
-
+#include <cstdlib>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -14,9 +16,18 @@
 constexpr char kDefaultListenAddress[] = "0.0.0.0:50051";
 constexpr char kDefaultMysqlHost[] = "127.0.0.1";
 constexpr char kDefaultMysqlUser[] = "monitor";
-constexpr char kDefaultMysqlPass[] = "REMOVED_OLD_PASSWORD";
+const char* kDefaultMysqlPass = std::getenv("MONITOR_DB_PASSWORD");
 constexpr char kDefaultMysqlDb[] = "monitor_db";
+
 int main(int argc, char* argv[]) {
+  // 检查数据库密码环境变量
+#ifdef ENABLE_MYSQL
+  if (kDefaultMysqlPass == nullptr || kDefaultMysqlPass[0] == '\0') {
+    std::cerr << "MONITOR_DB_PASSWORD is not set" << std::endl;
+    return 1;
+  }
+#endif
+
   std::string listen_address = kDefaultListenAddress;
 
   // 解析命令行参数
@@ -26,7 +37,8 @@ int main(int argc, char* argv[]) {
 
   std::cout << "Starting Monitor Client (Manager Mode)..." << std::endl;
   std::cout << "Listening on: " << listen_address << std::endl;
-    // 创建 gRPC 服务
+
+  // 创建 gRPC 服务
   monitor::GrpcServerImpl service;
 
   // 创建 HostManager 并设置回调
@@ -38,7 +50,8 @@ int main(int argc, char* argv[]) {
 
   // 启动 HostManager 后台处理
   mgr.Start();
-    // 创建 QueryManager 并初始化
+
+  // 创建 QueryManager 并初始化
   monitor::QueryManager query_mgr;
 
 #ifdef ENABLE_MYSQL
@@ -52,9 +65,11 @@ int main(int argc, char* argv[]) {
               << "query service will not be available" << std::endl;
   }
 #endif
+
   // 创建查询服务
   monitor::QueryServiceImpl query_service(&query_mgr);
-    // 启动 gRPC 服务器
+
+  // 启动 gRPC 服务器
   grpc::ServerBuilder builder;
 
   builder.AddListeningPort(
@@ -63,7 +78,8 @@ int main(int argc, char* argv[]) {
 
   builder.RegisterService(&service);
   builder.RegisterService(&query_service);
-    std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
+
+  std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
 
   std::cout << "Monitor Client listening on " << listen_address << std::endl;
   std::cout << "Waiting for workers to push data..." << std::endl;
